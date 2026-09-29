@@ -5,64 +5,128 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>Order keypad</title>
-  <!-- Telegram's Mini App script: it runs the Send button and hands the order to the bot. -->
+  <!-- Telegram's Mini App script: it hands the order to the bot. -->
   <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
   <!-- What the keys do. tests/keypad.test.js runs this block, so keep it free of page code. -->
   <script id="keypad-logic">
     (function (root) {
       "use strict";
 
-      // Keys that type their own name into the order. Keep in step with press_key in keyboards.py, which does
-      // the same (always at the end of the order) for the keypad at the bottom of the chat.
+      // An order is a list of lines, one of which is current: the keys type at the end of it. Every change
+      // makes a new {lines, current} rather than altering the old one.
+
+      // Keys that type themselves. D has no key of its own (every order starts with it), but a computer's
+      // keyboard can still type it.
       var TYPED_KEYS = "0123456789D*#+";
 
-      // Tap `key` with the caret at `start`, or with the text from `start` to `end` selected (typing replaces
-      // it); without them, the caret is at the end. Returns the new order and where the caret goes. `ibox` is
-      // what the IBox key types: the bot puts it in the page's address (IBOX_CODE in keyboards.py). Next starts
-      // a new line, but never an empty one.
-      function pressKey(order, key, ibox, start, end) {
-        if (start === undefined) start = order.length;
-        if (end === undefined) end = start;
-        var before = order.slice(0, start);
-        var after = order.slice(end);
-        var text;
+      // A new order: D (today) on line 1, and the # that starts the company line on line 2, where typing
+      // carries on. Keep in step with NEW_ORDER in keyboards.py.
+      var NEW_ORDER = "D\n#";
+
+      function newOrder() {
+        var lines = NEW_ORDER.split("\n");
+        return { lines: lines, current: lines.length - 1 };
+      }
+
+      function trim(line) {
+        return line.trim();
+      }
+
+      // Tap `key`: a typed key adds to the current line; "del" deletes its last character (on an empty line,
+      // the line itself); "enter" starts a new line below it (never a second empty one); "clear" starts a
+      // new order.
+      function press(order, key) {
+        var lines = order.lines.slice();
+        var current = order.current;
+        var line = lines[current];
         if (key.length === 1 && TYPED_KEYS.indexOf(key) !== -1) {
-          text = key;
-        } else if (key === "ibox") {
-          text = ibox;
-        } else if (key === "next") {
-          if (!before || before.endsWith("\n")) return { order: order, caret: end };
-          text = "\n";
-        } else if (key === "del") {
-          if (start === end) before = before.slice(0, -1);
-          text = "";
-        } else if (key === "clear") {
-          return { order: "", caret: 0 };
-        } else {
-          return { order: order, caret: end };
+          lines[current] = line + key;
+          return { lines: lines, current: current };
         }
-        return { order: before + text + after, caret: before.length + text.length };
+        if (key === "del") {
+          if (line) {
+            lines[current] = line.slice(0, -1);
+            return { lines: lines, current: current };
+          }
+          if (lines.length === 1) return order;
+          lines.splice(current, 1);
+          return { lines: lines, current: Math.max(0, current - 1) };
+        }
+        if (key === "enter") {
+          if (!line) return order;
+          lines.splice(current + 1, 0, "");
+          return { lines: lines, current: current + 1 };
+        }
+        if (key === "clear") return newOrder();
+        return order;
       }
 
-      // The order as it is sent to the bot: one bet per line, without blank lines or stray spaces.
-      function orderLines(order) {
-        return order
-          .split("\n")
-          .map(function (line) { return line.trim(); })
-          .filter(Boolean);
+      // Tap line `index` to type there. Leaving an empty line removes it; tapping below the last line starts a
+      // new one there.
+      function select(order, index) {
+        var lines = order.lines.slice();
+        var current = order.current;
+        index = Math.max(0, index);
+        if (index === current) return order;
+        if (lines[current] === "" && lines.length > 1) {
+          lines.splice(current, 1);
+          if (index > current) index -= 1;
+        }
+        if (index < lines.length) return { lines: lines, current: index };
+        var last = lines.length - 1;
+        if (lines[last] === "") return { lines: lines, current: last };
+        return { lines: lines.concat([""]), current: lines.length };
       }
 
-      // A new order starts with D (today) on its first line, ready for the next. Keep in step with NEW_ORDER in
-      // keyboards.py.
-      var NEW_ORDER = "D\n";
+      function isNew(order) {
+        return order.lines.join("\n") === NEW_ORDER;
+      }
+
+      function isDateLine(line) {
+        return line === "D" || /^\d{1,2}$/.test(line);
+      }
+
+      // Paste `text`, one line per line. Into a new order, a pasted order that starts with its date (D, or a
+      // day like 30) replaces it; anything else follows the D, in place of the # waiting on line 2. Otherwise
+      // the pasted lines go below the current line, or in its place if it's empty.
+      function paste(order, text) {
+        var pasted = text.split(/\r\n|\r|\n/).map(trim).filter(Boolean);
+        if (!pasted.length) return order;
+        var lines = order.lines.slice();
+        var at, replace;
+        if (isNew(order)) {
+          at = isDateLine(pasted[0]) ? 0 : 1;
+          replace = lines.length - at;
+        } else if (lines[order.current] === "") {
+          at = order.current;
+          replace = 1;
+        } else {
+          at = order.current + 1;
+          replace = 0;
+        }
+        lines.splice.apply(lines, [at, replace].concat(pasted));
+        return { lines: lines, current: at + pasted.length - 1 };
+      }
+
+      // The lines as they are sent to the bot: without blank lines, stray spaces, or a # left on its own.
+      function orderLines(lines) {
+        return lines.map(trim).filter(function (line) { return line && line !== "#"; });
+      }
 
       // True when there's something to send beyond the D a new order starts with.
       function hasOrder(order) {
-        var lines = orderLines(order);
-        return lines.length > 1 || (lines.length === 1 && lines[0] !== "D");
+        return orderLines(order.lines).some(function (line) { return line !== "D"; });
       }
 
-      var keypad = { pressKey: pressKey, orderLines: orderLines, NEW_ORDER: NEW_ORDER, hasOrder: hasOrder };
+      var keypad = {
+        NEW_ORDER: NEW_ORDER,
+        newOrder: newOrder,
+        press: press,
+        select: select,
+        paste: paste,
+        orderLines: orderLines,
+        hasOrder: hasOrder
+      };
       if (typeof module === "object" && module.exports) {
         module.exports = keypad;
       } else {
@@ -72,14 +136,20 @@
   </script>
   <style>
     :root {
-      --bg: #000000;
+      --bg: #161616;
+      --list-bg: #1e1e1e;
+      --separator: #2c2c2c;
+      --current: #050505;       /* the line being typed on */
+      --number: #8e8e8e;
       --text: #ffffff;
-      --muted: #7c7c7c;
-      --line: #555555;      /* full-width lines between the rows */
-      --divider: #6f6f6f;   /* short lines between the keys */
-      --accent: #2c55e8;    /* the display's border and the Send button */
-      --pressed: #242424;
-      --row-height: clamp(48px, 8.4vh, 64px);
+      --key: #2a2a2a;
+      --key-pressed: #3b3b3b;
+      --paste: #2b2b2b;
+      --clear: #e39c9c;
+      --submit: #74c69d;
+      --hash: #b9a7ff;
+      --row-height: 36px;
+      --key-height: clamp(44px, 7.4vh, 56px);
     }
 
     * {
@@ -103,107 +173,9 @@
       -webkit-touch-callout: none;
     }
 
-    .app {
-      display: flex;
-      flex-direction: column;
-      height: var(--tg-viewport-stable-height, 100%);
-    }
-
-    /* The blue box that shows the order being tapped in. */
-    .display {
-      position: relative;
-      display: flex;
-      flex: 1;
-      min-height: 96px; /* also stops a long order from pushing the keypad off screen; the order scrolls instead */
-      margin: 10px 10px 4px;
-      border: 3px solid var(--accent);
-      border-radius: 12px;
-    }
-
-    /* A real text box, so a phone offers Paste on a long press, and a tap puts the caret where the keys type.
-       inputmode="none" keeps the phone's own keyboard away; the keys below do the typing. */
-    .order {
-      flex: 1;
-      min-width: 0;
-      margin: 0;
-      padding: 12px 60px 12px 14px;
-      border: 0;
-      outline: none;
-      resize: none;
-      background: transparent;
-      color: var(--text);
-      caret-color: var(--text);
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      font: 22px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
-      overflow-wrap: anywhere;
-      user-select: text;
-      -webkit-user-select: text;
-      -webkit-touch-callout: default;
-    }
-
-    .order::placeholder {
-      color: var(--muted);
-      opacity: 1;
-    }
-
-    /* ✕ in the blue box: clears the whole order. */
-    .clear-all {
-      position: absolute;
-      right: 4px;
-      bottom: 4px;
-      width: 52px;
-      height: 46px;
-      border: 0;
-      border-radius: 8px;
-      background: none;
-      color: var(--text);
-      font-size: 24px;
-      touch-action: manipulation;
-    }
-
-    .clear-all:active {
-      background: var(--pressed);
-    }
-
-    /* The keypad, laid out like the betting app's keyboard. */
-    .row {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      height: var(--row-height);
-    }
-
-    .row.five {
-      grid-template-columns: repeat(5, 1fr);
-    }
-
-    .row + .row {
-      border-top: 1px solid var(--line);
-    }
-
-    .key {
-      position: relative;
-      padding: 0;
-      border: 0;
-      background: none;
-      color: var(--text);
+    button {
       font: inherit;
-      font-size: 22px;
       touch-action: manipulation;
-    }
-
-    .key + .key::before {
-      content: "";
-      position: absolute;
-      top: 26%;
-      bottom: 26%;
-      left: 0;
-      width: 1px;
-      background: var(--divider);
-    }
-
-    .key:active:not(:disabled) {
-      background: var(--pressed);
     }
 
     button:focus {
@@ -211,30 +183,203 @@
     }
 
     button:focus-visible {
-      outline: 2px solid var(--accent);
+      outline: 2px solid var(--hash);
       outline-offset: -2px;
     }
 
-    /* Outside Telegram (a preview in a normal browser) there is no Telegram Send button, so the page shows one. */
-    .preview-bar {
-      padding: 8px 10px 10px;
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: var(--tg-viewport-stable-height, 100%);
     }
 
-    .preview-send {
-      width: 100%;
-      height: 48px;
+    /* The order, one numbered line per bet line. */
+    .lines {
+      flex: 1;
+      min-height: calc(var(--row-height) * 3);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      background: var(--list-bg);
+    }
+
+    .line {
+      display: flex;
+      align-items: center;
+      height: var(--row-height);
+      padding: 0 14px;
+      border-bottom: 1px solid var(--separator);
+      cursor: pointer;
+    }
+
+    .line.current {
+      background: var(--current);
+    }
+
+    .number {
+      flex: none;
+      width: 28px;
+      color: var(--number);
+      font-size: 14px;
+    }
+
+    .text {
+      overflow: hidden;
+      color: var(--text);
+      font-size: 19px;
+      white-space: pre;
+      text-overflow: ellipsis;
+    }
+
+    /* PASTE and CLEAR. */
+    .tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 8px 6px 6px;
+    }
+
+    .tool {
+      height: 28px;
       border: 0;
-      border-radius: 10px;
-      background: var(--accent);
-      color: #ffffff;
-      font: inherit;
-      font-size: 16px;
+      border-radius: 3px;
+      font-size: 12px;
       font-weight: 600;
+      letter-spacing: 0.08em;
     }
 
-    .preview-send:disabled {
-      background: #2a2a2a;
-      color: var(--muted);
+    .tool.paste {
+      background: var(--paste);
+      color: #d4d4d4;
+    }
+
+    .tool.clear {
+      background: var(--clear);
+      color: #ffffff;
+    }
+
+    .tool:active {
+      filter: brightness(1.2);
+    }
+
+    /* The keys. */
+    .keys {
+      display: grid;
+      gap: 6px;
+      padding: 0 6px calc(8px + var(--tg-safe-area-inset-bottom, 0px));
+    }
+
+    .key-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      height: var(--key-height);
+    }
+
+    .key-row.last {
+      grid-template-columns: 1fr 1fr 1fr 2fr;
+    }
+
+    .key {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: var(--key);
+      color: var(--text);
+      font-size: 21px;
+    }
+
+    .key:active:not(:disabled) {
+      background: var(--key-pressed);
+    }
+
+    .key.hash {
+      color: var(--hash);
+      font-size: 23px;
+    }
+
+    .key.submit {
+      background: var(--submit);
+      font-size: 19px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+    }
+
+    .key.submit:active:not(:disabled) {
+      background: var(--submit);
+      filter: brightness(1.1);
+    }
+
+    .key.submit:disabled {
+      opacity: 0.45;
+    }
+
+    .key svg {
+      width: 25px;
+      height: 25px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Where to long-press and Paste when a phone won't let the PASTE button read the clipboard. */
+    .sheet {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.6);
+    }
+
+    .sheet[hidden] {
+      display: none;
+    }
+
+    .sheet-body {
+      width: 100%;
+      max-width: 360px;
+      padding: 16px;
+      border-radius: 10px;
+      background: #242424;
+    }
+
+    .sheet-hint {
+      margin: 0 0 10px;
+      font-size: 15px;
+      line-height: 1.4;
+    }
+
+    .paste-box {
+      display: block;
+      width: 100%;
+      height: 120px;
+      padding: 10px;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      background: #111111;
+      color: var(--text);
+      font: 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      resize: none;
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
+    }
+
+    .sheet-cancel {
+      width: 100%;
+      height: 40px;
+      margin-top: 10px;
+      border: 0;
+      border-radius: 6px;
+      background: #333333;
+      color: var(--text);
+      font-size: 15px;
     }
 
     .toast {
@@ -244,61 +389,67 @@
       left: 16px;
       padding: 12px 14px;
       border-radius: 10px;
-      background: #1f1f1f;
+      background: #2a2a2a;
       color: var(--text);
       font: 15px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
       white-space: pre-wrap;
       box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
     }
+
+    .toast[hidden] {
+      display: none;
+    }
   </style>
 </head>
 <body>
   <main class="app">
-    <section class="display" aria-label="Order">
-      <textarea class="order" id="order" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off"
-        spellcheck="false" placeholder="Tap in your order"></textarea>
-      <button type="button" class="clear-all" data-key="clear" data-aria="clearAll" aria-label="Clear all">✕</button>
-    </section>
+    <div class="lines" id="lines" role="list" aria-label="Order"></div>
 
-    <div class="keypad" id="keypad">
-      <div class="row five">
-        <button type="button" class="key" data-key="D">D</button>
-        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
-        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
-        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
-        <button type="button" class="key" data-key="clear" data-aria="clearAll" aria-label="Clear all">✕</button>
-      </div>
-      <div class="row">
+    <div class="tools">
+      <button type="button" class="tool paste" data-action="paste" data-label="paste">PASTE</button>
+      <button type="button" class="tool clear" data-key="clear" data-label="clear">CLEAR</button>
+    </div>
+
+    <div class="keys">
+      <div class="key-row">
         <button type="button" class="key" data-key="1">1</button>
         <button type="button" class="key" data-key="2">2</button>
         <button type="button" class="key" data-key="3">3</button>
-        <!-- Labelled Clear, but deletes one character; the two ✕ buttons clear the whole order. -->
-        <button type="button" class="key" data-key="del" data-label="clear">Clear</button>
+        <button type="button" class="key" data-key="del" data-aria="del" aria-label="Delete">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1z"/><path d="M17.5 9.5l-5 5M12.5 9.5l5 5"/></svg>
+        </button>
       </div>
-      <div class="row">
+      <div class="key-row">
         <button type="button" class="key" data-key="4">4</button>
         <button type="button" class="key" data-key="5">5</button>
         <button type="button" class="key" data-key="6">6</button>
-        <button type="button" class="key" data-key="*">*</button>
+        <button type="button" class="key" data-key="+">+</button>
       </div>
-      <div class="row">
+      <div class="key-row">
         <button type="button" class="key" data-key="7">7</button>
         <button type="button" class="key" data-key="8">8</button>
         <button type="button" class="key" data-key="9">9</button>
-        <button type="button" class="key" data-key="#">#</button>
+        <button type="button" class="key" data-key="enter" data-aria="enter" aria-label="New line">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6v5a3 3 0 0 1-3 3H6"/><path d="M9.5 10.5L6 14l3.5 3.5"/></svg>
+        </button>
       </div>
-      <div class="row">
-        <button type="button" class="key" data-key="+">+</button>
+      <div class="key-row last">
+        <button type="button" class="key" data-key="*">*</button>
         <button type="button" class="key" data-key="0">0</button>
-        <button type="button" class="key" data-key="ibox">IBox</button>
-        <button type="button" class="key" data-key="next" data-label="next">Next</button>
+        <button type="button" class="key hash" data-key="#">#</button>
+        <button type="button" class="key submit" id="submit" data-action="submit" data-label="submit" disabled>SUBMIT</button>
       </div>
-    </div>
-
-    <div class="preview-bar" id="preview-bar" hidden>
-      <button type="button" class="preview-send" id="preview-send" data-label="send" disabled>Send order</button>
     </div>
   </main>
+
+  <div class="sheet" id="paste-sheet" hidden>
+    <div class="sheet-body">
+      <p class="sheet-hint" data-label="pasteHint">Long-press in the box and choose Paste.</p>
+      <textarea class="paste-box" id="paste-box" inputmode="none" autocomplete="off" autocorrect="off"
+        autocapitalize="off" spellcheck="false"></textarea>
+      <button type="button" class="sheet-cancel" data-action="cancel-paste" data-label="cancel">Cancel</button>
+    </div>
+  </div>
 
   <div class="toast" id="toast" role="status" hidden></div>
 
@@ -309,46 +460,46 @@
       var tg = window.Telegram && window.Telegram.WebApp;
       var inTelegram = Boolean(tg && tg.platform && tg.platform !== "unknown");
 
-      // The bot opens this page with ?lang=en|zh and ?ibox=<what the IBox key types> (IBOX_CODE in keyboards.py).
-      var params = new URLSearchParams(location.search);
-      var lang = params.get("lang") === "zh" ? "zh" : "en";
-      var ibox = params.get("ibox") || "**";
+      // The bot opens this page with ?lang=en|zh.
+      var lang = new URLSearchParams(location.search).get("lang") === "zh" ? "zh" : "en";
 
       // Telegram hands the bot at most 4096 bytes, and every key types plain ASCII.
       var MAX_LENGTH = 4096;
 
       var TEXT = {
         en: {
-          clear: "Clear",
-          next: "Next",
-          send: "Send order",
-          clearAll: "Clear all",
-          placeholder: "Tap in your order",
+          paste: "PASTE",
+          clear: "CLEAR",
+          submit: "SUBMIT",
+          del: "Delete",
+          enter: "New line",
+          pasteHint: "Long-press in the box and choose Paste.",
+          cancel: "Cancel",
           preview: "Preview only. In Telegram this would send:"
         },
         zh: {
+          paste: "粘贴",
           clear: "清除",
-          next: "下一行",
-          send: "发送订单",
-          clearAll: "全部清除",
-          placeholder: "请输入您的订单",
+          submit: "提交",
+          del: "删除",
+          enter: "换行",
+          pasteHint: "在框内长按，然后选择「粘贴」。",
+          cancel: "取消",
           preview: "仅为预览。在 Telegram 中将发送："
         }
       }[lang];
 
-      var style = getComputedStyle(document.documentElement);
-      var ACCENT = style.getPropertyValue("--accent").trim();
-      var MUTED = style.getPropertyValue("--muted").trim();
-
-      var orderEl = document.getElementById("order");
-      var previewSend = document.getElementById("preview-send");
+      var linesEl = document.getElementById("lines");
+      var submitButton = document.getElementById("submit");
+      var sheet = document.getElementById("paste-sheet");
+      var pasteBox = document.getElementById("paste-box");
       var toast = document.getElementById("toast");
+      var rowHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-height")) || 36;
 
-      var order = "";
+      var order = Keypad.newOrder();
       var wasReady = null;
 
       document.documentElement.lang = lang === "zh" ? "zh-Hans" : "en";
-      orderEl.placeholder = TEXT.placeholder;
       document.querySelectorAll("[data-label]").forEach(function (el) {
         el.textContent = TEXT[el.dataset.label];
       });
@@ -360,73 +511,132 @@
         return inTelegram && tg.isVersionAtLeast(version);
       }
 
-      // Turn Send on or off to match the order. The D a new order starts with doesn't count on its own.
-      function updateSend() {
-        var ready = Keypad.hasOrder(order);
-        if (ready === wasReady) return;
-        wasReady = ready;
-        if (inTelegram) {
-          tg.MainButton.setParams(ready
-            ? { is_active: true, color: ACCENT, text_color: "#ffffff" }
-            : { is_active: false, color: "#2a2a2a", text_color: MUTED });
-          // Ask before closing the keypad while there's an order that hasn't been sent.
-          if (supports("6.2")) {
-            if (ready) tg.enableClosingConfirmation();
-            else tg.disableClosingConfirmation();
-          }
-        } else {
-          previewSend.disabled = !ready;
-        }
-      }
-
       function buzz(kind) {
         if (!supports("6.1")) return;
         if (kind === "error") tg.HapticFeedback.notificationOccurred("error");
         else tg.HapticFeedback.impactOccurred("light");
       }
 
-      // While typing at the end of a long order, keep the box scrolled to its last line.
-      function followEnd() {
-        if (orderEl.selectionEnd === orderEl.value.length) orderEl.scrollTop = orderEl.scrollHeight;
+      // Draw the order: its lines, then empty numbered lines down to the bottom of the list, with the current
+      // line marked and kept in view (so a long order shows the line being typed on, usually its last).
+      function render() {
+        var visible = Math.floor(linesEl.clientHeight / rowHeight);
+        var count = Math.max(order.lines.length, visible);
+        var current = null;
+        linesEl.textContent = "";
+        for (var i = 0; i < count; i++) {
+          var row = document.createElement("div");
+          row.className = "line";
+          row.setAttribute("role", "listitem");
+          row.dataset.index = String(i);
+          var number = document.createElement("span");
+          number.className = "number";
+          number.textContent = i + 1 + ".";
+          var text = document.createElement("span");
+          text.className = "text";
+          text.textContent = i < order.lines.length ? order.lines[i] : "";
+          row.appendChild(number);
+          row.appendChild(text);
+          if (i === order.current) {
+            row.classList.add("current");
+            current = row;
+          }
+          linesEl.appendChild(row);
+        }
+        if (current) current.scrollIntoView({ block: "nearest" });
+        updateSubmit();
       }
 
-      // Put `text` in the box with the caret at `caret`. Focusing the box shows the caret; inputmode="none"
-      // keeps the phone's keyboard from coming up.
-      function show(text, caret) {
-        order = text;
-        orderEl.value = text;
-        orderEl.focus({ preventScroll: true });
-        orderEl.setSelectionRange(caret, caret);
-        followEnd();
-        updateSend();
+      // SUBMIT is on only when there's more than the D a new order starts with.
+      function updateSubmit() {
+        var ready = Keypad.hasOrder(order);
+        if (ready === wasReady) return;
+        wasReady = ready;
+        submitButton.disabled = !ready;
+        // Ask before closing the keypad while there's an order that hasn't been sent.
+        if (supports("6.2")) {
+          if (ready) tg.enableClosingConfirmation();
+          else tg.disableClosingConfirmation();
+        }
       }
 
-      // A key types where the caret is in the box (at the end, unless the user tapped somewhere else).
+      function change(next) {
+        if (next.lines.join("\n").length > MAX_LENGTH) {
+          buzz("error"); // more than Telegram can carry
+          return;
+        }
+        order = next;
+        render();
+      }
+
       function tap(key) {
-        var result = Keypad.pressKey(order, key, ibox, orderEl.selectionStart, orderEl.selectionEnd);
-        if (result.order.length > MAX_LENGTH) {
+        buzz("tap");
+        change(Keypad.press(order, key));
+      }
+
+      function pasteText(text) {
+        change(Keypad.paste(order, text));
+      }
+
+      // PASTE reads the clipboard where the phone allows it (iPhones ask first). Telegram on Android often
+      // doesn't, so then a box opens to long-press and Paste into instead.
+      function pasteFromClipboard() {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          openPasteSheet();
+          return;
+        }
+        navigator.clipboard.readText().then(
+          function (text) {
+            if (text) pasteText(text);
+            else openPasteSheet();
+          },
+          openPasteSheet
+        );
+      }
+
+      var pasteTimer = null;
+
+      function openPasteSheet() {
+        pasteBox.value = "";
+        sheet.hidden = false;
+        pasteBox.focus();
+      }
+
+      function closePasteSheet() {
+        clearTimeout(pasteTimer);
+        sheet.hidden = true;
+        pasteBox.value = "";
+        pasteBox.blur();
+      }
+
+      // Take what was pasted into the box, all of it, once.
+      function takePasteBox() {
+        if (sheet.hidden) return;
+        var text = pasteBox.value;
+        closePasteSheet();
+        if (text.trim()) pasteText(text);
+      }
+
+      pasteBox.addEventListener("paste", function (event) {
+        var text = event.clipboardData && event.clipboardData.getData("text");
+        if (!text) return; // it lands in the box instead, and "input" below picks it up
+        event.preventDefault();
+        pasteBox.value = text;
+        takePasteBox();
+      });
+
+      // Some phones put the text in the box in several steps: wait for it to settle, then take it.
+      pasteBox.addEventListener("input", function () {
+        clearTimeout(pasteTimer);
+        pasteTimer = setTimeout(takePasteBox, 150);
+      });
+
+      function submit() {
+        if (!Keypad.hasOrder(order)) {
           buzz("error");
           return;
         }
-        buzz("tap");
-        show(result.order, result.caret);
-      }
-
-      // Pasting (a long press in the box on a phone), or typing on a computer's keyboard, goes straight in.
-      orderEl.addEventListener("input", function () {
-        if (orderEl.value.length > MAX_LENGTH) {
-          buzz("error"); // more than Telegram can carry: keep the order as it was
-          show(order, order.length);
-          return;
-        }
-        order = orderEl.value;
-        followEnd();
-        updateSend();
-      });
-
-      function send() {
-        if (!Keypad.hasOrder(order)) return;
-        var data = Keypad.orderLines(order).join("\n");
+        var data = Keypad.orderLines(order.lines).join("\n");
         if (inTelegram) {
           if (supports("6.2")) tg.disableClosingConfirmation();
           tg.sendData(data); // Telegram closes the keypad and hands the order to the bot
@@ -444,8 +654,19 @@
       }
 
       document.addEventListener("click", function (event) {
-        var button = event.target.closest("button[data-key]");
-        if (button && !button.disabled) tap(button.dataset.key);
+        var target = event.target.closest("[data-key], [data-action], .line");
+        if (!target || target.disabled) return;
+        if (target.classList.contains("line")) {
+          change(Keypad.select(order, Number(target.dataset.index)));
+        } else if (target.dataset.key) {
+          tap(target.dataset.key);
+        } else if (target.dataset.action === "paste") {
+          pasteFromClipboard();
+        } else if (target.dataset.action === "submit") {
+          submit();
+        } else if (target.dataset.action === "cancel-paste") {
+          closePasteSheet();
+        }
       });
 
       // Don't let a mouse click focus a key, or Space would press it again.
@@ -453,15 +674,25 @@
         if (event.target.closest("button")) event.preventDefault();
       });
 
-      // A computer keyboard works too (Telegram Desktop): digits, D * # +, Backspace, Enter = Next, Ctrl+Enter = Send.
-      var KEYBOARD = { d: "D", D: "D", Backspace: "del", Enter: "next" };
+      // A computer keyboard works too (Telegram Desktop): digits, D * # +, Backspace, Enter for a new line,
+      // the arrow keys to move between lines, Ctrl+V to paste and Ctrl+Enter to submit.
+      var KEYBOARD = { d: "D", D: "D", Backspace: "del", Enter: "enter" };
       document.addEventListener("keydown", function (event) {
+        if (!sheet.hidden) {
+          if (event.key === "Escape") closePasteSheet();
+          return;
+        }
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
           event.preventDefault();
-          send();
+          submit();
           return;
         }
         if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          change(Keypad.select(order, order.current + (event.key === "ArrowUp" ? -1 : 1)));
+          return;
+        }
         var key = KEYBOARD[event.key] || (/^[0-9*#+]$/.test(event.key) ? event.key : null);
         if (key) {
           event.preventDefault();
@@ -469,24 +700,29 @@
         }
       });
 
-      if (inTelegram) {
-        tg.MainButton.setParams({ text: TEXT.send, is_visible: true, has_shine_effect: false });
-        tg.MainButton.onClick(send);
-        if (supports("6.1")) {
-          tg.setHeaderColor("#000000");
-          tg.setBackgroundColor("#000000");
+      document.addEventListener("paste", function (event) {
+        if (!sheet.hidden || event.target === pasteBox) return; // the box in the sheet takes it
+        var text = event.clipboardData && event.clipboardData.getData("text");
+        if (text) {
+          event.preventDefault();
+          pasteText(text);
         }
-        if (supports("7.10")) tg.setBottomBarColor("#000000");
+      });
+
+      window.addEventListener("resize", render);
+
+      if (inTelegram) {
+        tg.MainButton.hide(); // SUBMIT is on the page
+        if (supports("6.1")) {
+          tg.setHeaderColor("#161616");
+          tg.setBackgroundColor("#161616");
+        }
+        if (supports("7.10")) tg.setBottomBarColor("#161616");
+        tg.onEvent("viewportChanged", render);
         tg.expand(); // room for the whole keypad
-      } else {
-        document.getElementById("preview-bar").hidden = false;
-        previewSend.addEventListener("click", send);
       }
 
-      // Every order starts with D, the caret on the line below it.
-      order = orderEl.value = Keypad.NEW_ORDER;
-      orderEl.setSelectionRange(order.length, order.length);
-      updateSend();
+      render();
       if (inTelegram) tg.ready();
     })();
   </script>
