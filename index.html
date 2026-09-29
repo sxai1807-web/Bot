@@ -13,18 +13,35 @@
       "use strict";
 
       // Keys that type their own name into the order. Keep in step with press_key in keyboards.py, which does
-      // the same for the keypad under the order message.
+      // the same (always at the end of the order) for the keypad at the bottom of the chat.
       var TYPED_KEYS = "0123456789D*#+";
 
-      // The order text after tapping `key`. `ibox` is what the IBox key types: the bot puts it in the page's
-      // address (IBOX_CODE in keyboards.py). Next starts a new line, but never an empty one.
-      function pressKey(order, key, ibox) {
-        if (key.length === 1 && TYPED_KEYS.indexOf(key) !== -1) return order + key;
-        if (key === "ibox") return order + ibox;
-        if (key === "next") return order && !order.endsWith("\n") ? order + "\n" : order;
-        if (key === "del") return order.slice(0, -1);
-        if (key === "clear") return "";
-        return order;
+      // Tap `key` with the caret at `start`, or with the text from `start` to `end` selected (typing replaces
+      // it); without them, the caret is at the end. Returns the new order and where the caret goes. `ibox` is
+      // what the IBox key types: the bot puts it in the page's address (IBOX_CODE in keyboards.py). Next starts
+      // a new line, but never an empty one.
+      function pressKey(order, key, ibox, start, end) {
+        if (start === undefined) start = order.length;
+        if (end === undefined) end = start;
+        var before = order.slice(0, start);
+        var after = order.slice(end);
+        var text;
+        if (key.length === 1 && TYPED_KEYS.indexOf(key) !== -1) {
+          text = key;
+        } else if (key === "ibox") {
+          text = ibox;
+        } else if (key === "next") {
+          if (!before || before.endsWith("\n")) return { order: order, caret: end };
+          text = "\n";
+        } else if (key === "del") {
+          if (start === end) before = before.slice(0, -1);
+          text = "";
+        } else if (key === "clear") {
+          return { order: "", caret: 0 };
+        } else {
+          return { order: order, caret: end };
+        }
+        return { order: before + text + after, caret: before.length + text.length };
       }
 
       // The order as it is sent to the bot: one bet per line, without blank lines or stray spaces.
@@ -93,35 +110,31 @@
       border-radius: 12px;
     }
 
+    /* A real text box, so a phone offers Paste on a long press, and a tap puts the caret where the keys type.
+       inputmode="none" keeps the phone's own keyboard away; the keys below do the typing. */
     .order {
       flex: 1;
+      min-width: 0;
       margin: 0;
       padding: 12px 60px 12px 14px;
+      border: 0;
+      outline: none;
+      resize: none;
+      background: transparent;
+      color: var(--text);
+      caret-color: var(--text);
       overflow-y: auto;
       overscroll-behavior: contain;
       font: 22px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
-      white-space: pre-wrap;
-      word-break: break-all;
+      overflow-wrap: anywhere;
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
     }
 
-    .placeholder {
+    .order::placeholder {
       color: var(--muted);
-    }
-
-    .caret {
-      display: inline-block;
-      width: 2px;
-      height: 1.15em;
-      margin: 0 1px;
-      background: var(--text);
-      vertical-align: text-bottom;
-      animation: blink 1s steps(1) infinite;
-    }
-
-    @keyframes blink {
-      50% {
-        opacity: 0;
-      }
+      opacity: 1;
     }
 
     .backspace {
@@ -231,7 +244,8 @@
 <body>
   <main class="app">
     <section class="display" aria-label="Order">
-      <pre class="order" id="order" aria-live="polite"></pre>
+      <textarea class="order" id="order" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off"
+        spellcheck="false" placeholder="Tap in your order"></textarea>
       <button type="button" class="backspace" id="backspace" data-key="del" aria-label="Delete">⌫</button>
     </section>
 
@@ -318,16 +332,12 @@
       var orderEl = document.getElementById("order");
       var previewSend = document.getElementById("preview-send");
       var toast = document.getElementById("toast");
-      var caret = document.createElement("span");
-      caret.className = "caret";
-      var placeholder = document.createElement("span");
-      placeholder.className = "placeholder";
-      placeholder.textContent = TEXT.placeholder;
 
       var order = "";
       var wasReady = null;
 
       document.documentElement.lang = lang === "zh" ? "zh-Hans" : "en";
+      orderEl.placeholder = TEXT.placeholder;
       document.querySelectorAll("[data-label]").forEach(function (el) {
         el.textContent = TEXT[el.dataset.label];
       });
@@ -339,12 +349,8 @@
         return inTelegram && tg.isVersionAtLeast(version);
       }
 
-      function render() {
-        orderEl.textContent = order;
-        orderEl.appendChild(caret);
-        if (!order) orderEl.appendChild(placeholder);
-        orderEl.scrollTop = orderEl.scrollHeight;
-
+      // Turn Send on or off to match the order.
+      function updateSend() {
         var ready = Keypad.orderLines(order).length > 0;
         if (ready === wasReady) return;
         wasReady = ready;
@@ -368,18 +374,37 @@
         else tg.HapticFeedback.impactOccurred("light");
       }
 
+      // Put `text` in the box with the caret at `caret`. Focusing the box shows the caret; inputmode="none"
+      // keeps the phone's keyboard from coming up.
+      function show(text, caret) {
+        order = text;
+        orderEl.value = text;
+        orderEl.focus({ preventScroll: true });
+        orderEl.setSelectionRange(caret, caret);
+        updateSend();
+      }
+
+      // A key types where the caret is in the box (at the end, unless the user tapped somewhere else).
       function tap(key) {
-        var next = Keypad.pressKey(order, key, ibox);
-        if (next.length > MAX_LENGTH) {
+        var result = Keypad.pressKey(order, key, ibox, orderEl.selectionStart, orderEl.selectionEnd);
+        if (result.order.length > MAX_LENGTH) {
           buzz("error");
           return;
         }
         buzz("tap");
-        if (next !== order) {
-          order = next;
-          render();
-        }
+        show(result.order, result.caret);
       }
+
+      // Pasting (a long press in the box on a phone), or typing on a computer's keyboard, goes straight in.
+      orderEl.addEventListener("input", function () {
+        if (orderEl.value.length > MAX_LENGTH) {
+          buzz("error"); // more than Telegram can carry: keep the order as it was
+          show(order, order.length);
+          return;
+        }
+        order = orderEl.value;
+        updateSend();
+      });
 
       function send() {
         var lines = Keypad.orderLines(order);
@@ -441,7 +466,7 @@
         previewSend.addEventListener("click", send);
       }
 
-      render();
+      updateSend();
       if (inTelegram) tg.ready();
     })();
   </script>
