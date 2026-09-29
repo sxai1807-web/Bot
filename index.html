@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Order keypad</title>
+  <!-- Telegram's Mini App script: it runs the Send button and hands the order to the bot. -->
+  <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  <!-- What the keys do. tests/keypad.test.js runs this block, so keep it free of page code. -->
+  <script id="keypad-logic">
+    (function (root) {
+      "use strict";
+
+      // Keys that type their own name into the order. Keep in step with press_key in keyboards.py, which does
+      // the same for the keypad under the order message.
+      var TYPED_KEYS = "0123456789D*#+";
+
+      // The order text after tapping `key`. `ibox` is what the IBox key types: the bot puts it in the page's
+      // address (IBOX_CODE in keyboards.py). Next starts a new line, but never an empty one.
+      function pressKey(order, key, ibox) {
+        if (key.length === 1 && TYPED_KEYS.indexOf(key) !== -1) return order + key;
+        if (key === "ibox") return order + ibox;
+        if (key === "next") return order && !order.endsWith("\n") ? order + "\n" : order;
+        if (key === "del") return order.slice(0, -1);
+        if (key === "clear") return "";
+        return order;
+      }
+
+      // The order as it is sent to the bot: one bet per line, without blank lines or stray spaces.
+      function orderLines(order) {
+        return order
+          .split("\n")
+          .map(function (line) { return line.trim(); })
+          .filter(Boolean);
+      }
+
+      var keypad = { pressKey: pressKey, orderLines: orderLines };
+      if (typeof module === "object" && module.exports) {
+        module.exports = keypad;
+      } else {
+        root.Keypad = keypad;
+      }
+    })(this);
+  </script>
+  <style>
+    :root {
+      --bg: #000000;
+      --text: #ffffff;
+      --muted: #7c7c7c;
+      --line: #555555;      /* full-width lines between the rows */
+      --divider: #6f6f6f;   /* short lines between the keys */
+      --accent: #2c55e8;    /* the display's border and the Send button */
+      --pressed: #242424;
+      --row-height: clamp(48px, 8.4vh, 64px);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      overscroll-behavior: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: var(--tg-viewport-stable-height, 100%);
+    }
+
+    /* The blue box that shows the order being tapped in. */
+    .display {
+      position: relative;
+      display: flex;
+      flex: 1;
+      min-height: 96px; /* also stops a long order from pushing the keypad off screen; the order scrolls instead */
+      margin: 10px 10px 4px;
+      border: 3px solid var(--accent);
+      border-radius: 12px;
+    }
+
+    .order {
+      flex: 1;
+      margin: 0;
+      padding: 12px 60px 12px 14px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      font: 22px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .placeholder {
+      color: var(--muted);
+    }
+
+    .caret {
+      display: inline-block;
+      width: 2px;
+      height: 1.15em;
+      margin: 0 1px;
+      background: var(--text);
+      vertical-align: text-bottom;
+      animation: blink 1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .backspace {
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      width: 52px;
+      height: 46px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--text);
+      font-size: 24px;
+      touch-action: manipulation;
+    }
+
+    .backspace:active {
+      background: var(--pressed);
+    }
+
+    /* The keypad, laid out like the betting app's keyboard. */
+    .row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      height: var(--row-height);
+    }
+
+    .row.five {
+      grid-template-columns: repeat(5, 1fr);
+    }
+
+    .row + .row {
+      border-top: 1px solid var(--line);
+    }
+
+    .key {
+      position: relative;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--text);
+      font: inherit;
+      font-size: 22px;
+      touch-action: manipulation;
+    }
+
+    .key + .key::before {
+      content: "";
+      position: absolute;
+      top: 26%;
+      bottom: 26%;
+      left: 0;
+      width: 1px;
+      background: var(--divider);
+    }
+
+    .key:active:not(:disabled) {
+      background: var(--pressed);
+    }
+
+    button:focus {
+      outline: none;
+    }
+
+    button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    /* Outside Telegram (a preview in a normal browser) there is no Telegram Send button, so the page shows one. */
+    .preview-bar {
+      padding: 8px 10px 10px;
+    }
+
+    .preview-send {
+      width: 100%;
+      height: 48px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #ffffff;
+      font: inherit;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .preview-send:disabled {
+      background: #2a2a2a;
+      color: var(--muted);
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 72px;
+      left: 16px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #1f1f1f;
+      color: var(--text);
+      font: 15px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="display" aria-label="Order">
+      <pre class="order" id="order" aria-live="polite"></pre>
+      <button type="button" class="backspace" id="backspace" data-key="del" aria-label="Delete">⌫</button>
+    </section>
+
+    <div class="keypad" id="keypad">
+      <div class="row five">
+        <button type="button" class="key" data-key="D">D</button>
+        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
+        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
+        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
+        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
+      </div>
+      <div class="row">
+        <button type="button" class="key" data-key="1">1</button>
+        <button type="button" class="key" data-key="2">2</button>
+        <button type="button" class="key" data-key="3">3</button>
+        <button type="button" class="key" data-key="clear" data-label="clear">Clear</button>
+      </div>
+      <div class="row">
+        <button type="button" class="key" data-key="4">4</button>
+        <button type="button" class="key" data-key="5">5</button>
+        <button type="button" class="key" data-key="6">6</button>
+        <button type="button" class="key" data-key="*">*</button>
+      </div>
+      <div class="row">
+        <button type="button" class="key" data-key="7">7</button>
+        <button type="button" class="key" data-key="8">8</button>
+        <button type="button" class="key" data-key="9">9</button>
+        <button type="button" class="key" data-key="#">#</button>
+      </div>
+      <div class="row">
+        <button type="button" class="key" data-key="+">+</button>
+        <button type="button" class="key" data-key="0">0</button>
+        <button type="button" class="key" data-key="ibox">IBox</button>
+        <button type="button" class="key" data-key="next" data-label="next">Next</button>
+      </div>
+    </div>
+
+    <div class="preview-bar" id="preview-bar" hidden>
+      <button type="button" class="preview-send" id="preview-send" data-label="send" disabled>Send order</button>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var tg = window.Telegram && window.Telegram.WebApp;
+      var inTelegram = Boolean(tg && tg.platform && tg.platform !== "unknown");
+
+      // The bot opens this page with ?lang=en|zh and ?ibox=<what the IBox key types> (IBOX_CODE in keyboards.py).
+      var params = new URLSearchParams(location.search);
+      var lang = params.get("lang") === "zh" ? "zh" : "en";
+      var ibox = params.get("ibox") || "**";
+
+      // Telegram hands the bot at most 4096 bytes, and every key types plain ASCII.
+      var MAX_LENGTH = 4096;
+
+      var TEXT = {
+        en: {
+          clear: "Clear",
+          next: "Next",
+          send: "Send order",
+          del: "Delete",
+          placeholder: "Tap in your order",
+          preview: "Preview only. In Telegram this would send:"
+        },
+        zh: {
+          clear: "清除",
+          next: "下一行",
+          send: "发送订单",
+          del: "删除",
+          placeholder: "请输入您的订单",
+          preview: "仅为预览。在 Telegram 中将发送："
+        }
+      }[lang];
+
+      var style = getComputedStyle(document.documentElement);
+      var ACCENT = style.getPropertyValue("--accent").trim();
+      var MUTED = style.getPropertyValue("--muted").trim();
+
+      var orderEl = document.getElementById("order");
+      var previewSend = document.getElementById("preview-send");
+      var toast = document.getElementById("toast");
+      var caret = document.createElement("span");
+      caret.className = "caret";
+      var placeholder = document.createElement("span");
+      placeholder.className = "placeholder";
+      placeholder.textContent = TEXT.placeholder;
+
+      var order = "";
+      var wasReady = null;
+
+      document.documentElement.lang = lang === "zh" ? "zh-Hans" : "en";
+      document.querySelectorAll("[data-label]").forEach(function (el) {
+        el.textContent = TEXT[el.dataset.label];
+      });
+      document.getElementById("backspace").setAttribute("aria-label", TEXT.del);
+
+      function supports(version) {
+        return inTelegram && tg.isVersionAtLeast(version);
+      }
+
+      function render() {
+        orderEl.textContent = order;
+        orderEl.appendChild(caret);
+        if (!order) orderEl.appendChild(placeholder);
+        orderEl.scrollTop = orderEl.scrollHeight;
+
+        var ready = Keypad.orderLines(order).length > 0;
+        if (ready === wasReady) return;
+        wasReady = ready;
+        if (inTelegram) {
+          tg.MainButton.setParams(ready
+            ? { is_active: true, color: ACCENT, text_color: "#ffffff" }
+            : { is_active: false, color: "#2a2a2a", text_color: MUTED });
+          // Ask before closing the keypad while there's an order that hasn't been sent.
+          if (supports("6.2")) {
+            if (ready) tg.enableClosingConfirmation();
+            else tg.disableClosingConfirmation();
+          }
+        } else {
+          previewSend.disabled = !ready;
+        }
+      }
+
+      function buzz(kind) {
+        if (!supports("6.1")) return;
+        if (kind === "error") tg.HapticFeedback.notificationOccurred("error");
+        else tg.HapticFeedback.impactOccurred("light");
+      }
+
+      function tap(key) {
+        var next = Keypad.pressKey(order, key, ibox);
+        if (next.length > MAX_LENGTH) {
+          buzz("error");
+          return;
+        }
+        buzz("tap");
+        if (next !== order) {
+          order = next;
+          render();
+        }
+      }
+
+      function send() {
+        var lines = Keypad.orderLines(order);
+        if (!lines.length) return;
+        var data = lines.join("\n");
+        if (inTelegram) {
+          if (supports("6.2")) tg.disableClosingConfirmation();
+          tg.sendData(data); // Telegram closes the keypad and hands the order to the bot
+        } else {
+          showToast(TEXT.preview + "\n" + data);
+        }
+      }
+
+      var toastTimer = null;
+      function showToast(text) {
+        toast.textContent = text;
+        toast.hidden = false;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { toast.hidden = true; }, 4000);
+      }
+
+      document.addEventListener("click", function (event) {
+        var button = event.target.closest("button[data-key]");
+        if (button && !button.disabled) tap(button.dataset.key);
+      });
+
+      // Don't let a mouse click focus a key, or Space would press it again.
+      document.addEventListener("mousedown", function (event) {
+        if (event.target.closest("button")) event.preventDefault();
+      });
+
+      // A computer keyboard works too (Telegram Desktop): digits, D * # +, Backspace, Enter = Next, Ctrl+Enter = Send.
+      var KEYBOARD = { d: "D", D: "D", Backspace: "del", Enter: "next" };
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          send();
+          return;
+        }
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        var key = KEYBOARD[event.key] || (/^[0-9*#+]$/.test(event.key) ? event.key : null);
+        if (key) {
+          event.preventDefault();
+          tap(key);
+        }
+      });
+
+      if (inTelegram) {
+        tg.MainButton.setParams({ text: TEXT.send, is_visible: true, has_shine_effect: false });
+        tg.MainButton.onClick(send);
+        if (supports("6.1")) {
+          tg.setHeaderColor("#000000");
+          tg.setBackgroundColor("#000000");
+        }
+        if (supports("7.10")) tg.setBottomBarColor("#000000");
+        tg.expand(); // room for the whole keypad
+      } else {
+        document.getElementById("preview-bar").hidden = false;
+        previewSend.addEventListener("click", send);
+      }
+
+      render();
+      if (inTelegram) tg.ready();
+    })();
+  </script>
+</body>
+</html>
