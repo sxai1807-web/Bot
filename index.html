@@ -247,9 +247,30 @@
       letter-spacing: 0.08em;
     }
 
+    /* PASTE is really a text box, so holding it brings up the phone's own Paste. Its label is the box's
+       placeholder; it never shows a keyboard (inputmode="none") or anything typed into it. */
     .tool.paste {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 6px 0 0;
+      overflow: hidden;
+      resize: none;
+      outline: none;
       background: var(--paste);
+      color: transparent;
+      caret-color: transparent;
+      font-family: inherit;
+      line-height: 16px;
+      text-align: center;
+      user-select: text;
+      -webkit-user-select: text;
+      -webkit-touch-callout: default;
+    }
+
+    .tool.paste::placeholder {
       color: #d4d4d4;
+      opacity: 1;
     }
 
     .tool.clear {
@@ -326,62 +347,6 @@
       stroke-linejoin: round;
     }
 
-    /* Where to long-press and Paste when a phone won't let the PASTE button read the clipboard. */
-    .sheet {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      background: rgba(0, 0, 0, 0.6);
-    }
-
-    .sheet[hidden] {
-      display: none;
-    }
-
-    .sheet-body {
-      width: 100%;
-      max-width: 360px;
-      padding: 16px;
-      border-radius: 10px;
-      background: #242424;
-    }
-
-    .sheet-hint {
-      margin: 0 0 10px;
-      font-size: 15px;
-      line-height: 1.4;
-    }
-
-    .paste-box {
-      display: block;
-      width: 100%;
-      height: 120px;
-      padding: 10px;
-      border: 1px solid #3a3a3a;
-      border-radius: 6px;
-      background: #111111;
-      color: var(--text);
-      font: 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      resize: none;
-      user-select: text;
-      -webkit-user-select: text;
-      -webkit-touch-callout: default;
-    }
-
-    .sheet-cancel {
-      width: 100%;
-      height: 40px;
-      margin-top: 10px;
-      border: 0;
-      border-radius: 6px;
-      background: #333333;
-      color: var(--text);
-      font-size: 15px;
-    }
-
     .toast {
       position: fixed;
       right: 16px;
@@ -391,9 +356,11 @@
       border-radius: 10px;
       background: #2a2a2a;
       color: var(--text);
-      font: 15px/1.4 ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+      font-size: 15px;
+      line-height: 1.4;
       white-space: pre-wrap;
       box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+      pointer-events: none; /* taps go through to the keys below */
     }
 
     .toast[hidden] {
@@ -406,7 +373,9 @@
     <div class="lines" id="lines" role="list" aria-label="Order"></div>
 
     <div class="tools">
-      <button type="button" class="tool paste" data-action="paste" data-label="paste">PASTE</button>
+      <textarea class="tool paste" id="paste" rows="1" data-action="paste" data-placeholder="paste" aria-label="Paste"
+        placeholder="PASTE" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off"
+        spellcheck="false"></textarea>
       <button type="button" class="tool clear" data-key="clear" data-label="clear">CLEAR</button>
     </div>
 
@@ -442,15 +411,6 @@
     </div>
   </main>
 
-  <div class="sheet" id="paste-sheet" hidden>
-    <div class="sheet-body">
-      <p class="sheet-hint" data-label="pasteHint">Long-press in the box and choose Paste.</p>
-      <textarea class="paste-box" id="paste-box" inputmode="none" autocomplete="off" autocorrect="off"
-        autocapitalize="off" spellcheck="false"></textarea>
-      <button type="button" class="sheet-cancel" data-action="cancel-paste" data-label="cancel">Cancel</button>
-    </div>
-  </div>
-
   <div class="toast" id="toast" role="status" hidden></div>
 
   <script>
@@ -473,8 +433,7 @@
           submit: "SUBMIT",
           del: "Delete",
           enter: "New line",
-          pasteHint: "Long-press in the box and choose Paste.",
-          cancel: "Cancel",
+          pasteTip: "To paste here, press and hold PASTE, then tap Paste.",
           preview: "Preview only. In Telegram this would send:"
         },
         zh: {
@@ -483,16 +442,14 @@
           submit: "提交",
           del: "删除",
           enter: "换行",
-          pasteHint: "在框内长按，然后选择「粘贴」。",
-          cancel: "取消",
+          pasteTip: "要粘贴，请按住「粘贴」键，然后点选「粘贴」。",
           preview: "仅为预览。在 Telegram 中将发送："
         }
       }[lang];
 
       var linesEl = document.getElementById("lines");
       var submitButton = document.getElementById("submit");
-      var sheet = document.getElementById("paste-sheet");
-      var pasteBox = document.getElementById("paste-box");
+      var pasteEl = document.getElementById("paste");
       var toast = document.getElementById("toast");
       var rowHeight = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-height")) || 36;
 
@@ -505,6 +462,9 @@
       });
       document.querySelectorAll("[data-aria]").forEach(function (el) {
         el.setAttribute("aria-label", TEXT[el.dataset.aria]);
+      });
+      document.querySelectorAll("[data-placeholder]").forEach(function (el) {
+        el.placeholder = TEXT[el.dataset.placeholder];
       });
 
       function supports(version) {
@@ -578,57 +538,44 @@
         change(Keypad.paste(order, text));
       }
 
-      // PASTE reads the clipboard where the phone allows it (iPhones ask first). Telegram on Android often
-      // doesn't, so then a box opens to long-press and Paste into instead.
+      // A tap on PASTE reads the clipboard where the phone allows it (an iPhone asks first). Telegram on Android
+      // never lets a page do that, so there a tap just says how: press and hold PASTE, then tap the phone's own
+      // Paste. PASTE is really a text box, so that works anywhere; the "paste" handler below takes it from there.
       function pasteFromClipboard() {
         if (!navigator.clipboard || !navigator.clipboard.readText) {
-          openPasteSheet();
+          showToast(TEXT.pasteTip);
           return;
         }
         navigator.clipboard.readText().then(
           function (text) {
-            if (text) pasteText(text);
-            else openPasteSheet();
+            if (!text) {
+              showToast(TEXT.pasteTip);
+              return;
+            }
+            pasteEl.blur();
+            pasteText(text);
           },
-          openPasteSheet
+          function () {
+            showToast(TEXT.pasteTip);
+          }
         );
       }
 
+      // In case a phone puts pasted text straight into the PASTE box (in one go or in steps) instead of handing it
+      // to the "paste" handler: wait for it to settle, then take it all, once. Anything else typed there is dropped.
       var pasteTimer = null;
-
-      function openPasteSheet() {
-        pasteBox.value = "";
-        sheet.hidden = false;
-        pasteBox.focus();
-      }
-
-      function closePasteSheet() {
+      pasteEl.addEventListener("input", function (event) {
+        if (!/^insertFromPaste/.test(event.inputType || "")) {
+          pasteEl.value = "";
+          return;
+        }
         clearTimeout(pasteTimer);
-        sheet.hidden = true;
-        pasteBox.value = "";
-        pasteBox.blur();
-      }
-
-      // Take what was pasted into the box, all of it, once.
-      function takePasteBox() {
-        if (sheet.hidden) return;
-        var text = pasteBox.value;
-        closePasteSheet();
-        if (text.trim()) pasteText(text);
-      }
-
-      pasteBox.addEventListener("paste", function (event) {
-        var text = event.clipboardData && event.clipboardData.getData("text");
-        if (!text) return; // it lands in the box instead, and "input" below picks it up
-        event.preventDefault();
-        pasteBox.value = text;
-        takePasteBox();
-      });
-
-      // Some phones put the text in the box in several steps: wait for it to settle, then take it.
-      pasteBox.addEventListener("input", function () {
-        clearTimeout(pasteTimer);
-        pasteTimer = setTimeout(takePasteBox, 150);
+        pasteTimer = setTimeout(function () {
+          var text = pasteEl.value;
+          pasteEl.value = "";
+          pasteEl.blur();
+          if (text.trim()) pasteText(text);
+        }, 150);
       });
 
       function submit() {
@@ -664,8 +611,6 @@
           pasteFromClipboard();
         } else if (target.dataset.action === "submit") {
           submit();
-        } else if (target.dataset.action === "cancel-paste") {
-          closePasteSheet();
         }
       });
 
@@ -678,10 +623,6 @@
       // the arrow keys to move between lines, Ctrl+V to paste and Ctrl+Enter to submit.
       var KEYBOARD = { d: "D", D: "D", Backspace: "del", Enter: "enter" };
       document.addEventListener("keydown", function (event) {
-        if (!sheet.hidden) {
-          if (event.key === "Escape") closePasteSheet();
-          return;
-        }
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
           event.preventDefault();
           submit();
@@ -700,13 +641,13 @@
         }
       });
 
+      // Paste: holding PASTE and tapping Paste on a phone, or Ctrl+V on a computer.
       document.addEventListener("paste", function (event) {
-        if (!sheet.hidden || event.target === pasteBox) return; // the box in the sheet takes it
         var text = event.clipboardData && event.clipboardData.getData("text");
-        if (text) {
-          event.preventDefault();
-          pasteText(text);
-        }
+        if (!text) return; // it lands in the PASTE box instead, whose "input" handler takes it
+        event.preventDefault();
+        pasteEl.blur();
+        pasteText(text);
       });
 
       window.addEventListener("resize", render);
