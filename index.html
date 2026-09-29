@@ -52,7 +52,17 @@
           .filter(Boolean);
       }
 
-      var keypad = { pressKey: pressKey, orderLines: orderLines };
+      // A new order starts with D (today) on its first line, ready for the next. Keep in step with NEW_ORDER in
+      // keyboards.py.
+      var NEW_ORDER = "D\n";
+
+      // True when there's something to send beyond the D a new order starts with.
+      function hasOrder(order) {
+        var lines = orderLines(order);
+        return lines.length > 1 || (lines.length === 1 && lines[0] !== "D");
+      }
+
+      var keypad = { pressKey: pressKey, orderLines: orderLines, NEW_ORDER: NEW_ORDER, hasOrder: hasOrder };
       if (typeof module === "object" && module.exports) {
         module.exports = keypad;
       } else {
@@ -137,7 +147,8 @@
       opacity: 1;
     }
 
-    .backspace {
+    /* ✕ in the blue box: clears the whole order. */
+    .clear-all {
       position: absolute;
       right: 4px;
       bottom: 4px;
@@ -151,7 +162,7 @@
       touch-action: manipulation;
     }
 
-    .backspace:active {
+    .clear-all:active {
       background: var(--pressed);
     }
 
@@ -246,7 +257,7 @@
     <section class="display" aria-label="Order">
       <textarea class="order" id="order" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off"
         spellcheck="false" placeholder="Tap in your order"></textarea>
-      <button type="button" class="backspace" id="backspace" data-key="del" aria-label="Delete">⌫</button>
+      <button type="button" class="clear-all" data-key="clear" data-aria="clearAll" aria-label="Clear all">✕</button>
     </section>
 
     <div class="keypad" id="keypad">
@@ -255,14 +266,14 @@
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
-        <!-- A second backspace, on the keys themselves; the first is in the blue box. -->
-        <button type="button" class="key" data-key="del" aria-label="Delete">⌫</button>
+        <button type="button" class="key" data-key="clear" data-aria="clearAll" aria-label="Clear all">✕</button>
       </div>
       <div class="row">
         <button type="button" class="key" data-key="1">1</button>
         <button type="button" class="key" data-key="2">2</button>
         <button type="button" class="key" data-key="3">3</button>
-        <button type="button" class="key" data-key="clear" data-label="clear">Clear</button>
+        <!-- Labelled Clear, but deletes one character; the two ✕ buttons clear the whole order. -->
+        <button type="button" class="key" data-key="del" data-label="clear">Clear</button>
       </div>
       <div class="row">
         <button type="button" class="key" data-key="4">4</button>
@@ -311,7 +322,7 @@
           clear: "Clear",
           next: "Next",
           send: "Send order",
-          del: "Delete",
+          clearAll: "Clear all",
           placeholder: "Tap in your order",
           preview: "Preview only. In Telegram this would send:"
         },
@@ -319,7 +330,7 @@
           clear: "清除",
           next: "下一行",
           send: "发送订单",
-          del: "删除",
+          clearAll: "全部清除",
           placeholder: "请输入您的订单",
           preview: "仅为预览。在 Telegram 中将发送："
         }
@@ -341,17 +352,17 @@
       document.querySelectorAll("[data-label]").forEach(function (el) {
         el.textContent = TEXT[el.dataset.label];
       });
-      document.querySelectorAll('[data-key="del"]').forEach(function (el) {
-        el.setAttribute("aria-label", TEXT.del);
+      document.querySelectorAll("[data-aria]").forEach(function (el) {
+        el.setAttribute("aria-label", TEXT[el.dataset.aria]);
       });
 
       function supports(version) {
         return inTelegram && tg.isVersionAtLeast(version);
       }
 
-      // Turn Send on or off to match the order.
+      // Turn Send on or off to match the order. The D a new order starts with doesn't count on its own.
       function updateSend() {
-        var ready = Keypad.orderLines(order).length > 0;
+        var ready = Keypad.hasOrder(order);
         if (ready === wasReady) return;
         wasReady = ready;
         if (inTelegram) {
@@ -374,6 +385,11 @@
         else tg.HapticFeedback.impactOccurred("light");
       }
 
+      // While typing at the end of a long order, keep the box scrolled to its last line.
+      function followEnd() {
+        if (orderEl.selectionEnd === orderEl.value.length) orderEl.scrollTop = orderEl.scrollHeight;
+      }
+
       // Put `text` in the box with the caret at `caret`. Focusing the box shows the caret; inputmode="none"
       // keeps the phone's keyboard from coming up.
       function show(text, caret) {
@@ -381,6 +397,7 @@
         orderEl.value = text;
         orderEl.focus({ preventScroll: true });
         orderEl.setSelectionRange(caret, caret);
+        followEnd();
         updateSend();
       }
 
@@ -403,13 +420,13 @@
           return;
         }
         order = orderEl.value;
+        followEnd();
         updateSend();
       });
 
       function send() {
-        var lines = Keypad.orderLines(order);
-        if (!lines.length) return;
-        var data = lines.join("\n");
+        if (!Keypad.hasOrder(order)) return;
+        var data = Keypad.orderLines(order).join("\n");
         if (inTelegram) {
           if (supports("6.2")) tg.disableClosingConfirmation();
           tg.sendData(data); // Telegram closes the keypad and hands the order to the bot
@@ -466,6 +483,9 @@
         previewSend.addEventListener("click", send);
       }
 
+      // Every order starts with D, the caret on the line below it.
+      order = orderEl.value = Keypad.NEW_ORDER;
+      orderEl.setSelectionRange(order.length, order.length);
       updateSend();
       if (inTelegram) tg.ready();
     })();
