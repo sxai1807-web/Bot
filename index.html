@@ -241,7 +241,8 @@
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
         <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
-        <button type="button" class="key" disabled aria-hidden="true" tabindex="-1"></button>
+        <!-- A second backspace, on the keys themselves; the first is in the blue box. -->
+        <button type="button" class="key" data-key="del" aria-label="Delete">⌫</button>
       </div>
       <div class="row">
         <button type="button" class="key" data-key="1">1</button>
@@ -330,7 +331,9 @@
       document.querySelectorAll("[data-label]").forEach(function (el) {
         el.textContent = TEXT[el.dataset.label];
       });
-      document.getElementById("backspace").setAttribute("aria-label", TEXT.del);
+      document.querySelectorAll('[data-key="del"]').forEach(function (el) {
+        el.setAttribute("aria-label", TEXT.del);
+      });
 
       function supports(version) {
         return inTelegram && tg.isVersionAtLeast(version);
