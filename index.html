@@ -187,10 +187,13 @@
       outline-offset: -2px;
     }
 
+    /* The page's own height, which shrinks while the phone's keyboard is open and grows back when it closes.
+       (Not Telegram's --tg-viewport-stable-height: on Android that can stay at the keyboard-open height after the
+       keyboard closes, squashing the keypad to the top.) */
     .app {
       display: flex;
       flex-direction: column;
-      height: var(--tg-viewport-stable-height, 100%);
+      height: 100%;
     }
 
     /* The order, one numbered line per bet line. */
@@ -419,6 +422,7 @@
 
       var tg = window.Telegram && window.Telegram.WebApp;
       var inTelegram = Boolean(tg && tg.platform && tg.platform !== "unknown");
+      var android = inTelegram && /^android/.test(tg.platform);
 
       // The bot opens this page with ?lang=en|zh.
       var lang = new URLSearchParams(location.search).get("lang") === "zh" ? "zh" : "en";
@@ -434,6 +438,7 @@
           del: "Delete",
           enter: "New line",
           pasteTip: "To paste here, press and hold PASTE, then tap Paste.",
+          keyboardTip: "Tap your copied text above the keyboard to paste it (or use your keyboard's clipboard button).",
           preview: "Preview only. In Telegram this would send:"
         },
         zh: {
@@ -443,6 +448,7 @@
           del: "删除",
           enter: "换行",
           pasteTip: "要粘贴，请按住「粘贴」键，然后点选「粘贴」。",
+          keyboardTip: "点键盘上方显示的复制内容即可粘贴（或用键盘的剪贴板按钮）。",
           preview: "仅为预览。在 Telegram 中将发送："
         }
       }[lang];
@@ -530,6 +536,7 @@
       }
 
       function tap(key) {
+        if (pasteMode) endPasteMode();
         buzz("tap");
         change(Keypad.press(order, key));
       }
@@ -538,12 +545,13 @@
         change(Keypad.paste(order, text));
       }
 
-      // A tap on PASTE reads the clipboard where the phone allows it (an iPhone asks first). Telegram on Android
-      // never lets a page do that, so there a tap just says how: press and hold PASTE, then tap the phone's own
-      // Paste. PASTE is really a text box, so that works anywhere; the "paste" handler below takes it from there.
+      // A tap on PASTE reads the clipboard where the phone allows it: an iPhone shows a small Paste bubble to tap.
+      // Telegram on Android never lets a page read it, so there the tap opens the phone's keyboard instead, whose
+      // copied-text suggestion (or clipboard button) pastes into the PASTE box. Holding PASTE and tapping the
+      // phone's own Paste works everywhere too; the "paste" handler below takes that.
       function pasteFromClipboard() {
-        if (!navigator.clipboard || !navigator.clipboard.readText) {
-          showToast(TEXT.pasteTip);
+        if (android || !navigator.clipboard || !navigator.clipboard.readText) {
+          openKeyboardToPaste();
           return;
         }
         navigator.clipboard.readText().then(
@@ -561,21 +569,44 @@
         );
       }
 
-      // In case a phone puts pasted text straight into the PASTE box (in one go or in steps) instead of handing it
-      // to the "paste" handler: wait for it to settle, then take it all, once. Anything else typed there is dropped.
+      // True while the phone's keyboard is open on the PASTE box, so what it puts there counts as a paste.
+      var pasteMode = false;
+
+      function openKeyboardToPaste() {
+        pasteEl.blur();
+        pasteMode = true;
+        pasteEl.inputMode = "text";
+        pasteEl.focus();
+        showToast(TEXT.keyboardTip);
+      }
+
+      function endPasteMode() {
+        clearTimeout(pasteTimer);
+        pasteMode = false;
+        pasteEl.inputMode = "none";
+        pasteEl.value = "";
+        if (document.activeElement === pasteEl) pasteEl.blur(); // closes the keyboard
+      }
+
+      pasteEl.addEventListener("blur", function () {
+        if (pasteMode) endPasteMode();
+      });
+
+      // Text that lands in the PASTE box (from the keyboard, or a paste that skipped the "paste" handler), in one go
+      // or in steps: wait for it to settle, then take it all, once. Anything typed there otherwise is dropped.
       var pasteTimer = null;
       pasteEl.addEventListener("input", function (event) {
-        if (!/^insertFromPaste/.test(event.inputType || "")) {
+        if (!pasteMode && !/^insertFromPaste/.test(event.inputType || "")) {
           pasteEl.value = "";
           return;
         }
         clearTimeout(pasteTimer);
         pasteTimer = setTimeout(function () {
           var text = pasteEl.value;
-          pasteEl.value = "";
+          endPasteMode();
           pasteEl.blur();
           if (text.trim()) pasteText(text);
-        }, 150);
+        }, 300);
       });
 
       function submit() {
@@ -646,6 +677,7 @@
         var text = event.clipboardData && event.clipboardData.getData("text");
         if (!text) return; // it lands in the PASTE box instead, whose "input" handler takes it
         event.preventDefault();
+        endPasteMode();
         pasteEl.blur();
         pasteText(text);
       });
