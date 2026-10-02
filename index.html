@@ -227,7 +227,6 @@
 
     .text {
       overflow: hidden;
-      color: var(--text);
       font-size: 19px;
       white-space: pre;
       text-overflow: ellipsis;
@@ -358,7 +357,6 @@
       padding: 12px 14px;
       border-radius: 10px;
       background: #2a2a2a;
-      color: var(--text);
       font-size: 15px;
       line-height: 1.4;
       white-space: pre-wrap;
@@ -604,7 +602,6 @@
         pasteTimer = setTimeout(function () {
           var text = pasteEl.value;
           endPasteMode();
-          pasteEl.blur();
           if (text.trim()) pasteText(text);
         }, 300);
       });
@@ -678,7 +675,6 @@
         if (!text) return; // it lands in the PASTE box instead, whose "input" handler takes it
         event.preventDefault();
         endPasteMode();
-        pasteEl.blur();
         pasteText(text);
       });
 
@@ -691,7 +687,6 @@
           tg.setBackgroundColor("#161616");
         }
         if (supports("7.10")) tg.setBottomBarColor("#161616");
-        tg.onEvent("viewportChanged", render);
         tg.expand(); // room for the whole keypad
       }
 
